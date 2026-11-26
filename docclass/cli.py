@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .classifier import Classifier, Thresholds
 from .embedders import make_embedder
-from .extract import SUPPORTED, ExtractError, to_markdown
+from .extract import EXTRACTORS, SUPPORTED, ExtractError, to_markdown
 from .store import Store
 
 LABEL_KO = {"important": "중요", "general": "일반"}
@@ -38,11 +38,11 @@ def make_alias(name: str) -> str:
 _failed = False
 
 
-def _read(path: Path) -> str | None:
+def _read(path: Path, args: argparse.Namespace) -> str | None:
     """문서를 Markdown으로 읽는다. 실패하면 경고를 찍고 None."""
     global _failed
     try:
-        text = to_markdown(path)
+        text = to_markdown(path, extractor=args.extractor)
     except (ExtractError, OSError) as exc:
         print(f"{path}: 건너뜀 - {exc}", file=sys.stderr)
         _failed = True
@@ -58,7 +58,7 @@ def cmd_convert(args: argparse.Namespace) -> None:
     if args.out:
         args.out.mkdir(parents=True, exist_ok=True)
     for path in args.files:
-        text = _read(path)
+        text = _read(path, args)
         if text is None:
             continue
         if args.out:
@@ -74,7 +74,7 @@ def cmd_convert(args: argparse.Namespace) -> None:
 def cmd_register(args: argparse.Namespace) -> None:
     store = _open_store(args)
     for path in args.files:
-        text = _read(path)
+        text = _read(path, args)
         if text is None:
             continue
         count = store.add(str(path), args.label, text, max_chars=args.chunk_chars)
@@ -106,7 +106,7 @@ def cmd_classify(args: argparse.Namespace) -> None:
 
     reports = {}
     for path in args.files:
-        text = _read(path)
+        text = _read(path, args)
         if text is None:
             continue
         result = classifier.classify(text, max_chars=args.chunk_chars)
@@ -134,6 +134,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--store", default="store", help="인덱스 저장 디렉터리 (기본: ./store)")
     parser.add_argument("--embedder", help="bge-m3(기본), hashing, 또는 sentence-transformers 모델 이름")
     parser.add_argument("--device", help="cuda, cuda:0, cpu 등 (기본: 자동)")
+    parser.add_argument("--extractor", choices=EXTRACTORS, default="auto",
+                        help="문서 추출기: auto(기본, Docling 우선), docling, builtin")
     parser.add_argument("--chunk-chars", type=int, default=200, help="문장 하나의 최대 글자 수")
     sub = parser.add_subparsers(dest="command", required=True)
 

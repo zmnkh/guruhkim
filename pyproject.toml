@@ -11,6 +11,7 @@ dependencies = ["numpy"]
 
 [project.optional-dependencies]
 gpu = ["sentence-transformers>=3.0"]
+docling = ["docling[easyocr]", "python-pptx"]
 docs = ["python-docx", "openpyxl", "python-pptx", "pdfplumber", "olefile"]
 dev = ["pytest", "reportlab"]
 

@@ -78,7 +78,7 @@ def test_xlsx(tmp_path):
     path = tmp_path / "plan.xlsx"
     wb.save(path)
 
-    md = to_markdown(path)
+    md = to_markdown(path, extractor="builtin")
     assert "## 시트: 원가표\n\n2027년 신제품 원가 계획\n\n" + COST_TABLE_MD in md
     assert "| 허브 | 오로라 B | 20 |" in md  # 세로 병합 셀은 아래 행에도 채운다
     assert "빈 시트" not in md
@@ -97,7 +97,7 @@ def test_docx(tmp_path):
     path = tmp_path / "plan.docx"
     document.save(path)
 
-    md = to_markdown(path)
+    md = to_markdown(path, extractor="builtin")
     assert md.startswith("# 신제품 전략\n\n아래 표는")
     assert COST_TABLE_MD in md
     assert md.index(COST_TABLE_MD) < md.index("표 아래의 마무리 문단입니다.")
@@ -126,7 +126,7 @@ def test_pptx(tmp_path):
     path = tmp_path / "plan.pptx"
     prs.save(path)
 
-    md = to_markdown(path)
+    md = to_markdown(path, extractor="builtin")
     assert md.startswith("## 슬라이드 1: 원가 계획\n\n핵심 부품은")
     assert md.count("원가 계획") == 1  # 제목을 본문에 다시 쓰지 않는다
     assert COST_TABLE_MD in md
@@ -161,7 +161,7 @@ def test_pdf(tmp_path):
          Paragraph("표 아래의 마무리 문단입니다.", style)]
     )
 
-    md = to_markdown(path)
+    md = to_markdown(path, extractor="builtin")
     assert COST_TABLE_MD in md
     # 줄바꿈으로 끊긴 문장이 한 줄로 이어져야 한다
     assert any("독점 공급 계약" in line and "마무리할 계획입니다." in line for line in md.splitlines())
@@ -259,13 +259,77 @@ def test_csv_and_cp949_text(tmp_path):
 
 
 def test_unsupported_formats(tmp_path):
-    for name, message in [("a.xls", "XLSX로 저장"), ("a.zip", "지원하지 않는 형식")]:
-        (tmp_path / name).write_bytes(b"x")
-        with pytest.raises(ExtractError, match=message):
-            to_markdown(tmp_path / name)
+    (tmp_path / "a.zip").write_bytes(b"x")
+    with pytest.raises(ExtractError, match="지원하지 않는 형식"):
+        to_markdown(tmp_path / "a.zip")
+    (tmp_path / "a.xls").write_bytes(b"x")
+    with pytest.raises(ExtractError, match="Docling이 필요합니다"):
+        to_markdown(tmp_path / "a.xls", extractor="builtin")
     (tmp_path / "broken.xlsx").write_bytes(b"not a zip")
-    with pytest.raises(ExtractError, match="읽지 못했습니다"):
-        to_markdown(tmp_path / "broken.xlsx")
+    for extractor in ("builtin", "auto"):  # auto는 Docling이 실패해도 내장 추출기까지 시도한다
+        with pytest.raises(ExtractError, match="읽지 못했습니다"):
+            to_markdown(tmp_path / "broken.xlsx", extractor=extractor)
+    with pytest.raises(ValueError):
+        to_markdown(tmp_path / "a.zip", extractor="nope")
+
+
+def test_auto_falls_back_to_builtin_without_docling(tmp_path, monkeypatch, capsys):
+    import docclass.extract as extract
+
+    openpyxl = pytest.importorskip("openpyxl")
+    wb = openpyxl.Workbook()
+    for row in COST_ROWS:
+        wb.active.append(row)
+    wb.save(tmp_path / "a.xlsx")
+    monkeypatch.setattr(extract, "docling_available", lambda: False)
+    monkeypatch.setattr(extract, "_warned", set())
+    assert COST_TABLE_MD in to_markdown(tmp_path / "a.xlsx")
+    assert "docling이 설치되어 있지 않아" in capsys.readouterr().err
+
+
+def test_hwp_family_always_uses_builtin(tmp_path):
+    (tmp_path / "a.hwpx").write_bytes(b"not a zip")
+    with pytest.raises(ExtractError, match="HWPX 파일이 손상"):
+        to_markdown(tmp_path / "a.hwpx", extractor="docling")
+
+
+def test_docling_office_formats(tmp_path):
+    """Docling으로 뽑아도 표의 행 단위가 내장 추출기와 같아야 한다."""
+    pytest.importorskip("docling")
+    openpyxl = pytest.importorskip("openpyxl")
+    docx = pytest.importorskip("docx")
+    pptx = pytest.importorskip("pptx")
+    from pptx.util import Inches
+
+    wb = openpyxl.Workbook()
+    for row in COST_ROWS:
+        wb.active.append(row)
+    wb.save(tmp_path / "a.xlsx")
+
+    document = docx.Document()
+    document.add_paragraph("아래 표는 제품별 목표 원가와 판매가를 정리한 것입니다.")
+    table = document.add_table(rows=3, cols=4)
+    for r, row in enumerate(COST_ROWS):
+        for c, value in enumerate(row):
+            table.cell(r, c).text = str(value)
+    document.save(tmp_path / "a.docx")
+
+    prs = pptx.Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[5])
+    slide.shapes.title.text = "원가 계획"
+    shape = slide.shapes.add_table(3, 4, Inches(0.5), Inches(2.2), Inches(8), Inches(1.5))
+    for r, row in enumerate(COST_ROWS):
+        for c, value in enumerate(row):
+            shape.table.cell(r, c).text = str(value)
+    slide.notes_slide.notes_text_frame.text = "발표 때 원가는 언급하지 않는다."
+    prs.save(tmp_path / "a.pptx")
+
+    expected = chunk_text(COST_TABLE_MD)
+    for name in ("a.xlsx", "a.docx", "a.pptx"):
+        md = to_markdown(tmp_path / name, extractor="docling")
+        rows = [c for c in chunk_text(md) if c.startswith("제품명")]
+        assert rows == expected, name
+    assert "슬라이드 1 노트: 발표 때 원가는 언급하지 않는다." in md
 
 
 # ---- 표 데이터로 중요/일반 판정 ------------------------------------------
@@ -307,7 +371,7 @@ def test_cli_convert_and_skip_unreadable(tmp_path, capsys):
     (tmp_path / "a.csv").write_text("품목,원가\n오로라,42000\n", encoding="utf-8")
     (tmp_path / "b.xls").write_bytes(b"x")
     with pytest.raises(SystemExit) as exit_info:
-        main(["convert", "-o", str(tmp_path / "out"), str(tmp_path / "a.csv"), str(tmp_path / "b.xls")])
+        main(["--extractor", "builtin", "convert", "-o", str(tmp_path / "out"), str(tmp_path / "a.csv"), str(tmp_path / "b.xls")])
     assert exit_info.value.code == 1
     assert (tmp_path / "out" / "a.csv.md").read_text(encoding="utf-8").startswith("| 품목 | 원가 |")
     assert "b.xls: 건너뜀" in capsys.readouterr().err

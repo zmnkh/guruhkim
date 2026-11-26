@@ -20,29 +20,40 @@
 ### 설치
 
 ```bash
-pip install -e '.[gpu,docs]'  # GPU 서버(H200 등): 임베딩 모델 + 문서 추출
-pip install -e '.[docs]'      # 모델 없이 hashing 임베딩으로만 시험할 때
+pip install -e '.[gpu,docling,docs]'  # GPU 서버(H200 등): 임베딩 모델 + Docling + 내장 추출기
+pip install -e '.[docs]'              # 모델 없이 hashing 임베딩과 내장 추출기로만 시험할 때
 ```
 
-### 지원 형식
+### 문서 추출
 
-모든 문서는 먼저 Markdown으로 변환한 뒤 임베딩한다.
+모든 문서는 먼저 Markdown으로 변환한 뒤 임베딩한다. 기본 추출기는 [Docling](https://github.com/docling-project/docling)이고, Docling이 다루지 않는 형식은 내장 추출기가 맡는다.
 
-| 형식 | 추출 내용 |
+| 형식 | 기본 추출기 | 비고 |
+|---|---|---|
+| `.pdf` | Docling | 레이아웃 분석, 표 구조 인식, 스캔본 OCR |
+| `.docx` `.xlsx` `.xlsm` `.pptx` | Docling | PPTX 발표자 노트는 따로 읽어 덧붙인다 |
+| `.png` `.jpg` `.tif` 등 이미지 | Docling | OCR |
+| `.doc` `.xls` `.ppt` `.html` | Docling | 구형 Office 형식은 LibreOffice가 설치되어 있어야 한다 |
+| `.hwp` `.hwpx` | 내장 | Docling 미지원 |
+| `.txt` `.md` `.csv` | 내장 | UTF-8, CP949 |
+
+`--extractor`로 바꿀 수 있다.
+
+| 값 | 동작 |
 |---|---|
-| `.txt` `.md` `.csv` | 본문 (UTF-8, CP949) |
-| `.docx` | 제목, 문단, 표 (문서 순서대로) |
-| `.xlsx` `.xlsm` | 시트별 표. 빈 행으로 나뉜 표는 따로, 표 위의 제목 줄은 본문으로 |
-| `.pptx` | 슬라이드별 제목, 텍스트 상자, 표, 차트 데이터, 발표자 노트 |
-| `.pdf` | 본문(끊긴 줄을 문장으로 이음)과 표 |
-| `.hwpx` `.hwp` | 문단, 표, 캡션, 머리말, 각주 |
+| `auto` (기본) | Docling 우선. Docling이 없거나 실패하면 내장 추출기로 다시 읽고 경고한다 |
+| `docling` | Docling만 쓴다. 실패하면 그 파일은 건너뛴다 |
+| `builtin` | 내장 추출기만 쓴다 (PDF, DOCX, XLSX, PPTX, HWP, HWPX) |
 
 변환 결과는 `convert`로 직접 확인할 수 있다.
 
 ```bash
 python -m docclass convert 원가계획.xlsx            # 화면에 출력
 python -m docclass convert -o md/ 문서/*            # md/<파일명>.md로 저장
+python -m docclass --extractor builtin convert 보고서.pdf
 ```
+
+Docling은 PDF와 이미지를 처음 처리할 때 레이아웃·OCR 모델을 Hugging Face에서 내려받는다. 인터넷이 막힌 서버에서는 다른 곳에서 `docling-tools models download`로 받아 옮긴 뒤 `DOCLING_ARTIFACTS_PATH`로 위치를 지정한다. Office 문서는 모델 없이 변환된다.
 
 ### 표 처리
 
@@ -90,7 +101,10 @@ GPU나 모델 없이 시험하려면 `--embedder hashing --store demo_store`를 
 
 ### 한계와 주의
 
-- 스캔한 PDF와 문서 안의 이미지는 글자를 읽지 못한다(OCR 미지원). 구형 `.doc` `.xls` `.ppt`, 암호가 걸린 문서, 배포용 HWP도 읽지 못한다. 읽지 못한 파일은 건너뛰고 경고를 낸다.
+- 등록과 분류에는 같은 추출기를 써야 한다. 추출기가 다르면 같은 문서도 Markdown이 조금 달라져 정확 일치가 줄어든다. `auto`가 내장 추출기로 대신 읽었다는 경고가 나오면 원인을 먼저 해결하는 편이 좋다.
+- 한국어 OCR은 EasyOCR이 설치되어 있을 때 켜진다(`docling` 설치 옵션에 포함). 없으면 Docling 기본 OCR을 쓰는데 한국어 인식이 보장되지 않는다.
+- 내장 추출기는 OCR이 없어 스캔한 PDF를 읽지 못한다. 암호가 걸린 문서와 배포용 HWP는 어느 쪽으로도 읽지 못한다. 읽지 못한 파일은 건너뛰고 경고를 낸다.
+- Docling으로 뽑은 XLSX에는 시트 이름이, PPTX에는 슬라이드 번호가 들어가지 않는다.
 - 표의 첫 행을 머리글로 본다. 머리글이 여러 줄이거나 가로로 병합된 표는 열 이름이 어색하게 붙을 수 있다.
 - 엑셀 수식은 엑셀이 마지막으로 저장한 계산값을 읽는다. 엑셀에서 한 번도 열지 않은 파일은 수식 칸이 비어 나온다.
 - PDF는 줄바꿈 위치를 추정해 문장을 잇기 때문에 원본과 띄어쓰기가 달라질 수 있다. 이 경우 정확 일치 대신 의미 유사도로 잡힌다.
@@ -104,5 +118,5 @@ GPU나 모델 없이 시험하려면 `--embedder hashing --store demo_store`를 
 ### 테스트
 
 ```bash
-pip install -e '.[dev,docs]' && pytest
+pip install -e '.[dev,docs]' && pytest   # docling이 설치되어 있으면 Docling 경로도 함께 검사
 ```

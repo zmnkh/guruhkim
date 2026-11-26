@@ -1,6 +1,10 @@
 """여러 문서 형식을 Markdown으로 변환한다.
 
-지원: txt, md, csv, docx, xlsx/xlsm, pptx, pdf, hwpx, hwp(5.x)
+추출기는 두 가지다.
+- docling : 기본. PDF(레이아웃 분석, OCR), Office 문서, 이미지를 처리한다.
+- builtin : 가벼운 내장 추출기. Docling이 다루지 않는 HWP/HWPX와 텍스트 파일을 맡고,
+            Docling이 없거나 실패했을 때의 대체 수단이기도 하다.
+
 표는 Markdown 표로 내보내고, 청크 분할 단계(chunking.py)가 행 단위로 다시 읽는다.
 """
 
@@ -9,6 +13,7 @@ from __future__ import annotations
 import csv
 import re
 import struct
+import sys
 import zipfile
 import zlib
 from datetime import date, datetime, time
@@ -461,6 +466,77 @@ def _hwp(path: Path) -> str:
         ole.close()
 
 
+# ---- Docling -----------------------------------------------------------
+
+_DOCLING_SUFFIXES = {
+    ".pdf", ".docx", ".xlsx", ".xlsm", ".pptx", ".html", ".htm",
+    ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp",
+    ".doc", ".xls", ".ppt",  # Docling이 LibreOffice(soffice)로 변환해 읽는다
+}
+_docling_converter = None
+
+
+def docling_available() -> bool:
+    import importlib.util
+
+    return importlib.util.find_spec("docling") is not None
+
+
+def _get_docling_converter():
+    """변환기는 모델을 올리는 비용이 크므로 한 번만 만든다."""
+    global _docling_converter
+    if _docling_converter is None:
+        from docling.datamodel.base_models import InputFormat
+        from docling.datamodel.pipeline_options import PdfPipelineOptions
+        from docling.document_converter import DocumentConverter, ImageFormatOption, PdfFormatOption
+
+        options = PdfPipelineOptions()
+        try:  # EasyOCR이 있으면 한국어 인식을 켠다. 없으면 Docling 기본 OCR을 쓴다.
+            import easyocr  # noqa: F401
+            from docling.datamodel.pipeline_options import EasyOcrOptions
+
+            options.ocr_options = EasyOcrOptions(lang=["ko", "en"])
+        except ImportError:
+            pass
+        _docling_converter = DocumentConverter(
+            format_options={
+                InputFormat.PDF: PdfFormatOption(pipeline_options=options),
+                InputFormat.IMAGE: ImageFormatOption(pipeline_options=options),
+            }
+        )
+    return _docling_converter
+
+
+def _pptx_notes(path: Path) -> list[str]:
+    """Docling은 발표자 노트를 내보내지 않아서 따로 읽어 붙인다."""
+    try:
+        import pptx
+    except ImportError:
+        return []
+    blocks = []
+    for number, slide in enumerate(pptx.Presentation(str(path)).slides, 1):
+        if slide.has_notes_slide:
+            notes = slide.notes_slide.notes_text_frame
+            if notes is not None and notes.text.strip():
+                blocks.append(f"슬라이드 {number} 노트: " + _clean(notes.text))
+    return blocks
+
+
+def _docling(path: Path) -> str:
+    try:
+        converter = _get_docling_converter()
+    except ImportError as exc:
+        raise ExtractError("docling 패키지가 필요합니다: pip install 'docclass[docling]'") from exc
+    result = converter.convert(str(path))
+    text = result.document.export_to_markdown(
+        escape_html=False, escape_underscores=False, image_placeholder=""
+    )
+    blocks = [text]
+    if path.suffix.lower() == ".pptx":
+        blocks += _pptx_notes(path)
+    return _join(blocks)
+
+
 # ---- 진입점 -------------------------------------------------------------
 
 _HANDLERS = {
@@ -475,23 +551,61 @@ _HANDLERS = {
     ".hwpx": _hwpx,
     ".hwp": _hwp,
 }
-_LEGACY = {".doc": "DOCX", ".xls": "XLSX", ".ppt": "PPTX"}
 
-SUPPORTED = tuple(_HANDLERS)
+SUPPORTED = tuple(sorted(set(_HANDLERS) | _DOCLING_SUFFIXES))
+EXTRACTORS = ("auto", "docling", "builtin")
+_warned: set[str] = set()
 
 
-def to_markdown(path: str | Path) -> str:
-    """문서를 Markdown 문자열로 변환한다. 읽을 수 없으면 ExtractError."""
-    path = Path(path)
-    suffix = path.suffix.lower()
-    if suffix in _LEGACY:
-        raise ExtractError(f"{suffix} 형식은 지원하지 않습니다. {_LEGACY[suffix]}로 저장한 뒤 다시 시도하세요.")
-    handler = _HANDLERS.get(suffix)
-    if handler is None:
-        raise ExtractError(f"지원하지 않는 형식입니다: {suffix or path.name}")
+def _warn_once(message: str) -> None:
+    if message not in _warned:
+        _warned.add(message)
+        print(f"경고: {message}", file=sys.stderr)
+
+
+def _run(handler, path: Path) -> str:
     try:
         return handler(path)
     except ExtractError:
         raise
     except Exception as exc:
-        raise ExtractError(f"문서를 읽지 못했습니다: {exc}") from exc
+        raise ExtractError(f"문서를 읽지 못했습니다: {type(exc).__name__}: {exc}") from exc
+
+
+def to_markdown(path: str | Path, extractor: str = "auto") -> str:
+    """문서를 Markdown 문자열로 변환한다. 읽을 수 없으면 ExtractError.
+
+    extractor:
+      auto    - Docling이 다루는 형식은 Docling으로, 나머지는 내장 추출기로.
+                Docling이 없거나 실패하면 내장 추출기로 대신 읽고 경고한다.
+      docling - Docling만 쓴다.
+      builtin - 내장 추출기만 쓴다.
+    """
+    if extractor not in EXTRACTORS:
+        raise ValueError(f"extractor는 {EXTRACTORS} 중 하나여야 합니다: {extractor}")
+    path = Path(path)
+    suffix = path.suffix.lower()
+    builtin = _HANDLERS.get(suffix)
+    by_docling = suffix in _DOCLING_SUFFIXES
+    if builtin is None and not by_docling:
+        raise ExtractError(f"지원하지 않는 형식입니다: {suffix or path.name}")
+
+    if extractor == "builtin" or not by_docling:
+        if builtin is None:
+            raise ExtractError(f"{suffix} 형식은 내장 추출기로 읽을 수 없습니다. Docling이 필요합니다.")
+        if extractor == "docling":
+            _warn_once(f"Docling은 {suffix} 형식을 지원하지 않아 내장 추출기를 씁니다.")
+        return _run(builtin, path)
+
+    if extractor == "docling" or builtin is None:
+        return _run(_docling, path)
+
+    # auto: Docling 우선, 안 되면 내장 추출기
+    if not docling_available():
+        _warn_once("docling이 설치되어 있지 않아 내장 추출기를 씁니다: pip install 'docclass[docling]'")
+        return _run(builtin, path)
+    try:
+        return _run(_docling, path)
+    except ExtractError as exc:
+        print(f"경고: {path}: Docling 추출 실패, 내장 추출기로 다시 읽습니다 ({exc})", file=sys.stderr)
+        return _run(builtin, path)
