@@ -24,7 +24,7 @@ def store(tmp_path):
 def test_only_non_important_data_is_general(store):
     result = Classifier(store).classify(read("incoming", "시장동향_메모.txt"))
     assert result.verdict == "general"
-    assert any(c.reason == "neutralized" for c in result.chunks)
+    assert any(c.reason == "general_hash" for c in result.chunks)
 
 
 def test_important_data_is_important(store):
@@ -72,7 +72,7 @@ def test_registration_order_does_not_matter(tmp_path):
 def test_save_load_and_replace(store, tmp_path):
     store.save()
     loaded = Store(tmp_path / "store", HashingEmbedder())
-    assert loaded.documents() == {"전략": "important", "소개": "general"}
+    assert {d: i["label"] for d, i in loaded.documents().items()} == {"전략": "important", "소개": "general"}
     assert loaded.vectors.shape == store.vectors.shape
     before = len(loaded.chunks)
     loaded.add("소개", "general", read("general", "회사소개_및_시장자료.txt"))
@@ -102,5 +102,5 @@ def test_cli(tmp_path, capsys):
     main(["--store", str(tmp_path / "s"), "classify", *map(str, sorted((EXAMPLES / "incoming").glob("*.txt")))])
     out = capsys.readouterr().out
     assert "시장동향_메모.txt: 일반 문서" in out
-    assert "협력사_전달_메일.txt: 중요 문서" in out
+    assert "협력사_전달_메일.txt: 기밀 문서" in out
     assert "점심_공지.txt: 일반 문서" in out

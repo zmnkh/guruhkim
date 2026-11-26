@@ -358,7 +358,7 @@ def test_table_row_classification_end_to_end(tmp_path, capsys):
     capsys.readouterr()
     main(base + ["classify", leak, harmless])
     out = capsys.readouterr().out
-    assert "유출.xlsx: 중요 문서" in out and "정확히 일치" in out
+    assert "유출.xlsx: 기밀 문서" in out and "기밀 문서에만 있는 문장과 일치" in out
     assert "인용.xlsx: 일반 문서" in out
 
     store = Store(tmp_path / "s", HashingEmbedder())
