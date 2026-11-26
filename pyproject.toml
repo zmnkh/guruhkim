@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "docclass"
+version = "0.1.0"
+description = "중요/일반 문서 이중 인덱스 분류기"
+requires-python = ">=3.10"
+dependencies = ["numpy"]
+
+[project.optional-dependencies]
+gpu = ["sentence-transformers>=3.0"]
+dev = ["pytest"]
+
+[project.scripts]
+docclass = "docclass.cli:main"
+
+[tool.setuptools]
+packages = ["docclass"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
