@@ -10,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .chunking import chunk_text, sentence_hash, split_sentences
+from .chunking import chunk_hashes, chunk_text
 from .embedders import Embedder
 
 LABELS = ("important", "general")
@@ -77,7 +77,7 @@ class Store:
             new = self.embedder.encode(pieces)
             self.vectors = new if self.vectors.size == 0 else np.vstack([self.vectors, new])
             self.chunks.extend({"doc": doc, "label": label, "text": p} for p in pieces)
-        hashes = sorted({h for s in split_sentences(text) if (h := sentence_hash(s))})
+        hashes = sorted(set().union(*(chunk_hashes(p) for p in pieces)))
         self.sentences[doc] = {"label": label, "hashes": hashes}
         return len(pieces)
 

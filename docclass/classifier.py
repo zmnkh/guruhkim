@@ -78,6 +78,8 @@ class Classifier:
         for i, piece in enumerate(pieces):
             (s_imp, m_imp), (s_gen, m_gen) = imp[i], gen[i]
             exact = [s for s in split_sentences(piece) if sentence_hash(s) in exclusive]
+            if not exact and sentence_hash(piece) in exclusive:  # 표의 행처럼 통째로 일치
+                exact = [piece]
             imp_doc = m_imp["doc"] if m_imp else None
 
             if exact:

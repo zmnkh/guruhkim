@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .classifier import Classifier, Thresholds
 from .embedders import make_embedder
+from .extract import SUPPORTED, ExtractError, to_markdown
 from .store import Store
 
 LABEL_KO = {"important": "중요", "general": "일반"}
@@ -34,14 +35,49 @@ def make_alias(name: str) -> str:
     return ALIASES.get(name, name)
 
 
-def _read(path: Path) -> str:
-    return path.read_text(encoding="utf-8", errors="replace")
+_failed = False
+
+
+def _read(path: Path) -> str | None:
+    """문서를 Markdown으로 읽는다. 실패하면 경고를 찍고 None."""
+    global _failed
+    try:
+        text = to_markdown(path)
+    except (ExtractError, OSError) as exc:
+        print(f"{path}: 건너뜀 - {exc}", file=sys.stderr)
+        _failed = True
+        return None
+    if not text.strip():
+        print(f"{path}: 건너뜀 - 추출된 텍스트가 없습니다(스캔한 PDF라면 OCR이 필요합니다).", file=sys.stderr)
+        _failed = True
+        return None
+    return text
+
+
+def cmd_convert(args: argparse.Namespace) -> None:
+    if args.out:
+        args.out.mkdir(parents=True, exist_ok=True)
+    for path in args.files:
+        text = _read(path)
+        if text is None:
+            continue
+        if args.out:
+            target = args.out / (path.name + ".md")
+            target.write_text(text, encoding="utf-8")
+            print(f"{path} -> {target}")
+        else:
+            if len(args.files) > 1:
+                print(f"<!-- {path} -->")
+            print(text)
 
 
 def cmd_register(args: argparse.Namespace) -> None:
     store = _open_store(args)
     for path in args.files:
-        count = store.add(str(path), args.label, _read(path), max_chars=args.chunk_chars)
+        text = _read(path)
+        if text is None:
+            continue
+        count = store.add(str(path), args.label, text, max_chars=args.chunk_chars)
         print(f"[{LABEL_KO[args.label]}] {path}: 청크 {count}개 등록")
     store.save()
 
@@ -70,7 +106,10 @@ def cmd_classify(args: argparse.Namespace) -> None:
 
     reports = {}
     for path in args.files:
-        result = classifier.classify(_read(path), max_chars=args.chunk_chars)
+        text = _read(path)
+        if text is None:
+            continue
+        result = classifier.classify(text, max_chars=args.chunk_chars)
         reports[str(path)] = result.to_dict()
         if args.json:
             continue
@@ -103,6 +142,11 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("files", nargs="+", type=Path)
     p.set_defaults(func=cmd_register)
 
+    p = sub.add_parser("convert", help="문서를 Markdown으로 변환해 확인 (" + " ".join(SUPPORTED) + ")")
+    p.add_argument("files", nargs="+", type=Path)
+    p.add_argument("-o", "--out", type=Path, help="이 디렉터리에 <파일명>.md로 저장 (없으면 화면 출력)")
+    p.set_defaults(func=cmd_convert)
+
     p = sub.add_parser("remove", help="등록 해제")
     p.add_argument("files", nargs="+", type=Path)
     p.set_defaults(func=cmd_remove)
@@ -120,8 +164,12 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--t-min-hits", type=int, help="중요 판정에 필요한 중요 청크 수")
     p.set_defaults(func=cmd_classify)
 
+    global _failed
+    _failed = False
     args = parser.parse_args(argv)
     args.func(args)
+    if _failed:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -20,16 +20,51 @@
 ### 설치
 
 ```bash
-pip install -e '.[gpu]'   # GPU 서버(H200 등): sentence-transformers 포함
-pip install -e .          # 모델 없이 hashing 임베딩으로만 시험할 때
+pip install -e '.[gpu,docs]'  # GPU 서버(H200 등): 임베딩 모델 + 문서 추출
+pip install -e '.[docs]'      # 모델 없이 hashing 임베딩으로만 시험할 때
 ```
+
+### 지원 형식
+
+모든 문서는 먼저 Markdown으로 변환한 뒤 임베딩한다.
+
+| 형식 | 추출 내용 |
+|---|---|
+| `.txt` `.md` `.csv` | 본문 (UTF-8, CP949) |
+| `.docx` | 제목, 문단, 표 (문서 순서대로) |
+| `.xlsx` `.xlsm` | 시트별 표. 빈 행으로 나뉜 표는 따로, 표 위의 제목 줄은 본문으로 |
+| `.pptx` | 슬라이드별 제목, 텍스트 상자, 표, 차트 데이터, 발표자 노트 |
+| `.pdf` | 본문(끊긴 줄을 문장으로 이음)과 표 |
+| `.hwpx` `.hwp` | 문단, 표, 캡션, 머리말, 각주 |
+
+변환 결과는 `convert`로 직접 확인할 수 있다.
+
+```bash
+python -m docclass convert 원가계획.xlsx            # 화면에 출력
+python -m docclass convert -o md/ 문서/*            # md/<파일명>.md로 저장
+```
+
+### 표 처리
+
+표는 문장으로 나눌 수 없으므로 **행 하나를 한 단위**로 임베딩한다. 행만 떼어 놓아도 뜻이 통하도록 열 이름을 값 앞에 붙인다.
+
+```
+| 제품명 | 목표 원가 | 목표 판매가 |      제품명: 오로라 허브; 목표 원가: 42000; 목표 판매가: 129000
+| --- | --- | --- |                 →   제품명: 오로라 센서; 목표 원가: 8500; 목표 판매가: 24900
+| 오로라 허브 | 42000 | 129000 |
+| 오로라 센서 | 8500 | 24900 |
+```
+
+- 2열짜리 표는 항목-값 표로 보고 행마다 `항목: 값`으로 만든다.
+- 열이 많아 한 행이 길면 여러 단위로 나누고, 각 단위에 첫 열(행의 키)을 반복한다.
+- 세로로 병합된 셀은 아래 행에도 같은 값을 채운다.
 
 ### 사용법
 
 ```bash
 # 등록 (처음 등록할 때 고른 임베딩이 저장소에 기록된다)
-python -m docclass --embedder bge-m3 register --label important examples/important/*.txt
-python -m docclass register --label general examples/general/*.txt
+python -m docclass --embedder bge-m3 register --label important 중요문서/*.pdf 중요문서/*.xlsx
+python -m docclass register --label general 일반문서/*.hwp 일반문서/*.pptx
 
 # 분류
 python -m docclass classify examples/incoming/*.txt        # 요약
@@ -55,7 +90,11 @@ GPU나 모델 없이 시험하려면 `--embedder hashing --store demo_store`를 
 
 ### 한계와 주의
 
-- 입력은 UTF-8 텍스트 파일이다. PDF, DOCX, HWP는 먼저 텍스트로 추출해야 한다.
+- 스캔한 PDF와 문서 안의 이미지는 글자를 읽지 못한다(OCR 미지원). 구형 `.doc` `.xls` `.ppt`, 암호가 걸린 문서, 배포용 HWP도 읽지 못한다. 읽지 못한 파일은 건너뛰고 경고를 낸다.
+- 표의 첫 행을 머리글로 본다. 머리글이 여러 줄이거나 가로로 병합된 표는 열 이름이 어색하게 붙을 수 있다.
+- 엑셀 수식은 엑셀이 마지막으로 저장한 계산값을 읽는다. 엑셀에서 한 번도 열지 않은 파일은 수식 칸이 비어 나온다.
+- PDF는 줄바꿈 위치를 추정해 문장을 잇기 때문에 원본과 띄어쓰기가 달라질 수 있다. 이 경우 정확 일치 대신 의미 유사도로 잡힌다.
+- 같은 표라도 열 구성이 달라지면 정확 일치는 안 되고 의미 유사도에 의존한다.
 - bge-m3 임계값(0.80)은 출발점일 뿐이다. 실제 문서로 검증 세트를 만들어 조정해야 한다.
 - `hashing` 임베딩은 글자 겹침만 보므로 표현을 많이 바꾼 문장은 놓친다. 데모와 테스트 전용이다.
 - 20자 미만 문장은 이웃 문장에 붙이거나 버린다. 아주 짧은 기밀 값 하나만 옮긴 경우는 잡지 못한다.
@@ -65,5 +104,5 @@ GPU나 모델 없이 시험하려면 `--embedder hashing --store demo_store`를 
 ### 테스트
 
 ```bash
-pip install -e '.[dev]' && pytest
+pip install -e '.[dev,docs]' && pytest
 ```
